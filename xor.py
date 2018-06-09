@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 import numpy as np
 
+ALL_PERTUBATIONS = []
 
 def normalize_dico(dico):
 
@@ -17,7 +18,7 @@ def normalize_dico(dico):
 
 	return new_dico
 
-class Ind(nn.Module): 
+class Ind(nn.Module): # Basic individual class 
 
 	def __init__(self): 
 
@@ -40,7 +41,7 @@ class Ind(nn.Module):
 
 		return clone 
 
-class Swarm(): 
+class Swarm(): # Population class
 
 
 	def __init__(self):
@@ -52,19 +53,21 @@ class Swarm():
 		self.std = 0.3
 		self.lr = 1e-2
 
-	def add_pop(self, no_perturbation = False):
+	def add_pop(self, no_perturbation = False): # This creates a clone, for evaluating the gradient 
 
 		seed = np.random.randint(350000)
+		print(seed)
 		torch.manual_seed(seed)
-
 		clone = self.base.get_clone()
 		if no_perturbation: 
 			return clone 
 
 		for p in clone.state_dict().values(): 
 
-			perturbation = torch.ones_like(p).normal_()*self.std
-			p.copy_(p + perturbation)
+			perturbation = torch.ones_like(p).normal_()
+			ALL_PERTUBATIONS.append(perturbation)
+
+			p.copy_(p + perturbation*self.std)
 
 		# self.seeds.append(seed)
 		return clone, seed
@@ -73,14 +76,16 @@ class Swarm():
 
 		self.fitness[seed] = fitness
 
-	def improve(self): 
+	def improve(self):  # REINFORCE part 
 
-		normalized_fitness = normalize_dico(self.fitness)
+		normalized_fitness = normalize_dico(self.fitness) # loss is normalized, using softmax 
 		for p in self.base.state_dict().values(): 
 			grads = torch.zeros_like(p)
 			for s in normalized_fitness: 
+				print(s)
 				torch.manual_seed(s)
 				perturbation = torch.ones_like(p).normal_()
+				print(perturbation)
 				merit = normalized_fitness[s].astype(float)
 				movement = perturbation*torch.tensor(merit)#.float().expand_as(perturbation)
 				# input(movement.shape)
@@ -89,9 +94,38 @@ class Swarm():
 			p.copy_(p.data + grads*self.lr/(self.std*len(self.fitness)))
 
 		self.fitness = {}
+
+	def improve_bis(self): # Other way to try to recover the perturbation 
+
+		normalized_fitness = normalize_dico(self.fitness)
+		grads = [torch.zeros_like(p) for p in self.base.parameters()]
+		for i,s in enumerate(normalized_fitness): 
+			print(s)
+			torch.manual_seed(s)
+			for param, v in enumerate(self.base.state_dict().values()) : 
+				perturbation = torch.ones_like(v).normal_()
+				print(perturbation)
+				grads[param] += perturbation*normalized_fitness[s].astype(float)
+
+		for g,v in zip(grads,self.base.state_dict().values()): 
+			v.copy_(v+g*self.lr/(self.std*len(self.fitness)))
 		
+		self.fitness = {}
 
 s = Swarm()
+i1, seed = s.add_pop()
+for p in ALL_PERTUBATIONS: 
+	print(p)
+
+s.observe_fitness(seed,1)
+s.improve_bis()
+input()
+
+
+input('Starting...')
+
+
+ #--------------- XOR Dataset
 
 data = torch.tensor(
 	[[0,1],
@@ -102,7 +136,7 @@ data_y = torch.tensor([1,1,0,0]).float().reshape(-1,1)
 
 
 epochs = 1000
-pop = 20
+pop = 1
 
 for epoch in range(epochs): 
 
@@ -110,8 +144,8 @@ for epoch in range(epochs):
 	for _ in range(pop): 
 		ind, seed = s.add_pop()
 		pred = ind(data)
-		loss = F.mse_loss(pred, data_y)
-		s.observe_fitness(seed, -loss.item())
+		loss = F.mse_loss(pred, data_y) 
+		s.observe_fitness(seed, -loss.item()) # Minus loss as performance 
 
 		overall_loss += loss.item()
 	s.improve()
